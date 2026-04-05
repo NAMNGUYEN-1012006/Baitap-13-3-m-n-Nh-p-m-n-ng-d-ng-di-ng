@@ -11,97 +11,56 @@ import {
   ScrollView,
   ActivityIndicator,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import db from "./db";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 
-const ACCOUNTS_KEY = "accounts";
-const CURRENT_USER_KEY = "currentUser";
-
-async function getAccounts() {
-  try {
-    const data = await AsyncStorage.getItem(ACCOUNTS_KEY);
-    return data ? JSON.parse(data) : [];
-  } catch (error) {
-    console.log("getAccounts error:", error);
-    return [];
-  }
-}
-
-async function saveAccounts(accounts) {
-  try {
-    await AsyncStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
-  } catch (error) {
-    console.log("saveAccounts error:", error);
-  }
-}
-
-async function saveCurrentUser(user) {
-  try {
-    await AsyncStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
-  } catch (error) {
-    console.log("saveCurrentUser error:", error);
-  }
-}
-
-async function getCurrentUser() {
-  try {
-    const data = await AsyncStorage.getItem(CURRENT_USER_KEY);
-    return data ? JSON.parse(data) : null;
-  } catch (error) {
-    console.log("getCurrentUser error:", error);
-    return null;
-  }
-}
-
-async function removeCurrentUser() {
-  try {
-    await AsyncStorage.removeItem(CURRENT_USER_KEY);
-  } catch (error) {
-    console.log("removeCurrentUser error:", error);
-  }
-}
+const Tab = createBottomTabNavigator();
+const Stack = createNativeStackNavigator();
 
 function RegisterScreen({ navigation }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const register = async () => {
+  const register = () => {
     if (!name.trim() || !email.trim() || !password.trim()) {
       return Alert.alert("Error", "Điền đầy đủ thông tin");
     }
 
-    try {
-      const accounts = await getAccounts();
-
-      const existed = accounts.find(
-        (a) => a.email.toLowerCase() === email.trim().toLowerCase()
+    db.transaction((tx) => {
+      tx.executeSql(
+        "SELECT * FROM accounts WHERE email = ?",
+        [email.trim().toLowerCase()],
+        (_, result) => {
+          if (result.rows.length > 0) {
+            Alert.alert("Error", "Email đã được sử dụng");
+          } else {
+            tx.executeSql(
+              "INSERT INTO accounts (name, email, password, avatarUrl) VALUES (?, ?, ?, ?)",
+              [name.trim(), email.trim().toLowerCase(), password, ""],
+              () => {
+                Alert.alert("Thành công", "Đăng ký thành công", [
+                  {
+                    text: "OK",
+                    onPress: () => navigation.navigate("Login"),
+                  },
+                ]);
+              },
+              (_, error) => {
+                console.log("Insert account error:", error);
+                Alert.alert("Lỗi", "Không thể đăng ký");
+              }
+            );
+          }
+        },
+        (_, error) => {
+          console.log("Check email error:", error);
+          Alert.alert("Lỗi", "Không thể kiểm tra email");
+        }
       );
-
-      if (existed) {
-        return Alert.alert("Error", "Email đã được sử dụng");
-      }
-
-      const newAccount = {
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        password: password,
-        avatarUrl: "",
-        posts: [],
-      };
-
-      const newAccounts = [...accounts, newAccount];
-      await saveAccounts(newAccounts);
-
-      Alert.alert("Thành công", "Đăng ký thành công", [
-        { text: "OK", onPress: () => navigation.navigate("Login") },
-      ]);
-    } catch (error) {
-      console.log("register error:", error);
-      Alert.alert("Lỗi", "Không thể đăng ký");
-    }
+    });
   };
 
   return (
@@ -146,29 +105,30 @@ function RegisterScreen({ navigation }) {
   );
 }
 
-function LoginScreen({ navigation }) {
+function LoginScreen({ navigation, setCurrentUser }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const login = async () => {
-    try {
-      const accounts = await getAccounts();
-
-      const account = accounts.find(
-        (a) =>
-          a.email === email.trim().toLowerCase() && a.password === password
+  const login = () => {
+    db.transaction((tx) => {
+      tx.executeSql(
+        "SELECT * FROM accounts WHERE email = ? AND password = ?",
+        [email.trim().toLowerCase(), password],
+        (_, result) => {
+          if (result.rows.length > 0) {
+            const account = result.rows.item(0);
+            setCurrentUser(account);
+            navigation.replace("Profilescreen", { account });
+          } else {
+            Alert.alert("Error", "Email hoặc password sai");
+          }
+        },
+        (_, error) => {
+          console.log("Login error:", error);
+          Alert.alert("Lỗi", "Không thể đăng nhập");
+        }
       );
-
-      if (!account) {
-        return Alert.alert("Error", "Email hoặc password sai");
-      }
-
-      await saveCurrentUser(account);
-      navigation.replace("Profilescreen", { account });
-    } catch (error) {
-      console.log("login error:", error);
-      Alert.alert("Lỗi", "Không thể đăng nhập");
-    }
+    });
   };
 
   return (
@@ -209,89 +169,96 @@ function HomeScreen({ account }) {
   const [user, setUser] = useState(account || null);
   const [avatarUrl, setAvatarUrl] = useState(account?.avatarUrl || "");
   const [text, setText] = useState("");
-  const [posts, setPosts] = useState(account?.posts || []);
+  const [posts, setPosts] = useState([]);
 
   useEffect(() => {
-    loadUser();
-  }, []);
-
-  const loadUser = async () => {
-    try {
-      const currentUser = await getCurrentUser();
-      if (!currentUser) return;
-
-      const accounts = await getAccounts();
-      const latestUser = accounts.find((a) => a.email === currentUser.email);
-
-      if (latestUser) {
-        setUser(latestUser);
-        setAvatarUrl(latestUser.avatarUrl || "");
-        setPosts(latestUser.posts || []);
-      }
-    } catch (error) {
-      console.log("loadUser error:", error);
+    if (account?.email) {
+      loadUser();
+      loadPosts();
     }
+  }, [account]);
+
+  const loadUser = () => {
+    db.transaction((tx) => {
+      tx.executeSql(
+        "SELECT * FROM accounts WHERE email = ?",
+        [account.email],
+        (_, result) => {
+          if (result.rows.length > 0) {
+            const latestUser = result.rows.item(0);
+            setUser(latestUser);
+            setAvatarUrl(latestUser.avatarUrl || "");
+          }
+        },
+        (_, error) => {
+          console.log("loadUser error:", error);
+        }
+      );
+    });
   };
 
-  const updateUserData = async (updatedFields) => {
-    try {
-      const accounts = await getAccounts();
-      const index = accounts.findIndex((a) => a.email === user.email);
-
-      if (index === -1) return null;
-
-      const updatedUser = {
-        ...accounts[index],
-        ...updatedFields,
-      };
-
-      accounts[index] = updatedUser;
-
-      await saveAccounts(accounts);
-      await saveCurrentUser(updatedUser);
-
-      setUser(updatedUser);
-      return updatedUser;
-    } catch (error) {
-      console.log("updateUserData error:", error);
-      return null;
-    }
+  const loadPosts = () => {
+    db.transaction((tx) => {
+      tx.executeSql(
+        "SELECT * FROM posts WHERE email = ? ORDER BY id DESC",
+        [account.email],
+        (_, result) => {
+          const tempPosts = [];
+          for (let i = 0; i < result.rows.length; i++) {
+            tempPosts.push(result.rows.item(i).content);
+          }
+          setPosts(tempPosts);
+        },
+        (_, error) => {
+          console.log("loadPosts error:", error);
+        }
+      );
+    });
   };
 
-  const saveAvatar = async () => {
+  const saveAvatar = () => {
     if (!avatarUrl.trim()) {
       return Alert.alert("Thông báo", "Nhập URL avatar");
     }
 
-    const updated = await updateUserData({
-      avatarUrl: avatarUrl.trim(),
+    db.transaction((tx) => {
+      tx.executeSql(
+        "UPDATE accounts SET avatarUrl = ? WHERE email = ?",
+        [avatarUrl.trim(), account.email],
+        () => {
+          Alert.alert("Thành công", "Lưu avatar thành công");
+          loadUser();
+        },
+        (_, error) => {
+          console.log("saveAvatar error:", error);
+          Alert.alert("Lỗi", "Không thể lưu avatar");
+        }
+      );
     });
-
-    if (updated) {
-      Alert.alert("Thành công", "Lưu avatar thành công");
-    }
   };
 
-  const addPost = async () => {
+  const addPost = () => {
     if (!text.trim()) return;
     if (!user) return Alert.alert("Lỗi", "Không tìm thấy tài khoản");
 
-    const currentPosts = user.posts || [];
-
-    if (currentPosts.length >= 5) {
+    if (posts.length >= 5) {
       return Alert.alert("Hạn chế", "Mỗi tài khoản tối đa 5 bài");
     }
 
-    const newPosts = [text.trim(), ...currentPosts];
-
-    const updated = await updateUserData({
-      posts: newPosts,
+    db.transaction((tx) => {
+      tx.executeSql(
+        "INSERT INTO posts (email, content) VALUES (?, ?)",
+        [account.email, text.trim()],
+        () => {
+          setText("");
+          loadPosts();
+        },
+        (_, error) => {
+          console.log("addPost error:", error);
+          Alert.alert("Lỗi", "Không thể thêm bài viết");
+        }
+      );
     });
-
-    if (updated) {
-      setPosts(updated.posts);
-      setText("");
-    }
   };
 
   const renderItem = ({ item }) => (
@@ -352,9 +319,9 @@ function HomeScreen({ account }) {
   );
 }
 
-function SettingScreen({ navigation }) {
-  const logout = async () => {
-    await removeCurrentUser();
+function SettingScreen({ navigation, setCurrentUser }) {
+  const logout = () => {
+    setCurrentUser(null);
     navigation.replace("Login");
   };
 
@@ -367,9 +334,7 @@ function SettingScreen({ navigation }) {
   );
 }
 
-const Tab = createBottomTabNavigator();
-
-function Profilescreen({ route }) {
+function Profilescreen({ route, navigation, setCurrentUser }) {
   const account = route?.params?.account;
 
   return (
@@ -377,12 +342,18 @@ function Profilescreen({ route }) {
       <Tab.Screen name="Home">
         {(props) => <HomeScreen {...props} account={account} />}
       </Tab.Screen>
-      <Tab.Screen name="Setting" component={SettingScreen} />
+      <Tab.Screen name="Setting">
+        {(props) => (
+          <SettingScreen
+            {...props}
+            navigation={navigation}
+            setCurrentUser={setCurrentUser}
+          />
+        )}
+      </Tab.Screen>
     </Tab.Navigator>
   );
 }
-
-const Stack = createNativeStackNavigator();
 
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -390,25 +361,62 @@ export default function App() {
   const [initialAccount, setInitialAccount] = useState(null);
 
   useEffect(() => {
-    checkLogin();
+    createTables();
   }, []);
 
-  const checkLogin = async () => {
-    try {
-      const currentUser = await getCurrentUser();
+  const createTables = () => {
+    db.transaction(
+      (tx) => {
+        tx.executeSql(`
+          CREATE TABLE IF NOT EXISTS accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            email TEXT UNIQUE,
+            password TEXT,
+            avatarUrl TEXT
+          );
+        `);
 
-      if (currentUser) {
-        setInitialRoute("Profilescreen");
-        setInitialAccount(currentUser);
-      } else {
-        setInitialRoute("Login");
+        tx.executeSql(`
+          CREATE TABLE IF NOT EXISTS posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT,
+            content TEXT
+          );
+        `);
+      },
+      (error) => {
+        console.log("createTables error:", error);
+        setLoading(false);
+      },
+      () => {
+        checkLogin();
       }
-    } catch (error) {
-      console.log("checkLogin error:", error);
-      setInitialRoute("Login");
-    } finally {
-      setLoading(false);
-    }
+    );
+  };
+
+  const checkLogin = () => {
+    db.transaction((tx) => {
+      tx.executeSql(
+        "SELECT * FROM accounts LIMIT 1",
+        [],
+        (_, result) => {
+          if (result.rows.length > 0) {
+            const account = result.rows.item(0);
+            setInitialRoute("Profilescreen");
+            setInitialAccount(account);
+          } else {
+            setInitialRoute("Login");
+          }
+          setLoading(false);
+        },
+        (_, error) => {
+          console.log("checkLogin error:", error);
+          setInitialRoute("Login");
+          setLoading(false);
+        }
+      );
+    });
   };
 
   if (loading) {
@@ -424,13 +432,25 @@ export default function App() {
     <NavigationContainer>
       <Stack.Navigator initialRouteName={initialRoute}>
         <Stack.Screen name="Register" component={RegisterScreen} />
-        <Stack.Screen name="Login" component={LoginScreen} />
+        <Stack.Screen name="Login">
+          {(props) => (
+            <LoginScreen
+              {...props}
+              setCurrentUser={(user) => setInitialAccount(user)}
+            />
+          )}
+        </Stack.Screen>
         <Stack.Screen
           name="Profilescreen"
-          component={Profilescreen}
           options={{ headerShown: false }}
-          initialParams={{ account: initialAccount }}
-        />
+        >
+          {(props) => (
+            <Profilescreen
+              {...props}
+              setCurrentUser={(user) => setInitialAccount(user)}
+            />
+          )}
+        </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>
   );

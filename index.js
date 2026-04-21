@@ -1,4 +1,4 @@
 import { registerRootComponent } from 'expo';
 
-import App from './AppsqlLite';
+import App from './httpapis';
 registerRootComponent(App);

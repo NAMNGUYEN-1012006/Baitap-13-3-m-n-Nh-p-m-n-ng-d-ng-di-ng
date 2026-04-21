@@ -1,16 +1,22 @@
 import React, { useState } from "react";
-import { View, Text, TextInput, StyleSheet, TouchableOpacity } from "react-native";
-import { accounts } from './store';
+import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert } from "react-native";
+import { loginUser } from './httpapis';
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const login= ()=>{
-    const account =accounts.find(a=>a.email==email && a.password==password) ;
-    if(!account) Alert.alert('Lỗi',"tài khoản không đúng") ;
-    navigation.navigate("Profilescreen",{account}) ;
 
-  }
+  const login = async () => {
+    if (!email || !password) return Alert.alert('Lỗi', 'Điền đầy đủ thông tin');
+
+    try {
+      const result = await loginUser(email, password);
+      navigation.navigate("Profilescreen", { account: { email, name: result.name } });
+    } catch (error) {
+      Alert.alert('Lỗi', error.message || 'Đăng nhập thất bại');
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.card}>
@@ -21,7 +27,7 @@ export default function LoginScreen({ navigation }) {
           style={styles.input}
           placeholder="test@mail.com"
           value={email}
-          onChangeText={setEmail} // capture input
+          onChangeText={setEmail}
         />
 
         <Text style={styles.label}>Password</Text>
@@ -30,7 +36,7 @@ export default function LoginScreen({ navigation }) {
           placeholder="● ● ●"
           secureTextEntry
           value={password}
-          onChangeText={setPassword} // capture input
+          onChangeText={setPassword}
         />
 
         <Text
@@ -42,7 +48,7 @@ export default function LoginScreen({ navigation }) {
 
         <TouchableOpacity
           style={styles.button}
-          onPress={() => login() }
+          onPress={login}
         >
           <Text>Sign in</Text>
         </TouchableOpacity>

@@ -11,10 +11,12 @@ import {
   ScrollView,
   ActivityIndicator,
 } from "react-native";
-import db from "./db";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { initDB, dbQuery, dbExecute, dbGetOne } from "./db";
+import { registerUser, loginUser, getPosts, createPost, deletePost, updateAvatar } from "./httpapis";
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -23,44 +25,57 @@ function RegisterScreen({ navigation }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [description, setDescription] = useState("");
 
-  const register = () => {
+  const register = async () => {
     if (!name.trim() || !email.trim() || !password.trim()) {
       return Alert.alert("Error", "Điền đầy đủ thông tin");
     }
 
-    db.transaction((tx) => {
-      tx.executeSql(
-        "SELECT * FROM accounts WHERE email = ?",
-        [email.trim().toLowerCase()],
-        (_, result) => {
-          if (result.rows.length > 0) {
-            Alert.alert("Error", "Email đã được sử dụng");
-          } else {
-            tx.executeSql(
-              "INSERT INTO accounts (name, email, password, avatarUrl) VALUES (?, ?, ?, ?)",
-              [name.trim(), email.trim().toLowerCase(), password, ""],
-              () => {
-                Alert.alert("Thành công", "Đăng ký thành công", [
-                  {
-                    text: "OK",
-                    onPress: () => navigation.navigate("Login"),
-                  },
-                ]);
-              },
-              (_, error) => {
-                console.log("Insert account error:", error);
-                Alert.alert("Lỗi", "Không thể đăng ký");
-              }
-            );
-          }
+    try {
+      // Try API first
+      await registerUser({
+        email: email.trim().toLowerCase(),
+        password,
+        name: name.trim(),
+        description: description.trim(),
+      });
+
+      Alert.alert("Thành công", "Đăng ký thành công", [
+        {
+          text: "OK",
+          onPress: () => navigation.navigate("Login"),
         },
-        (_, error) => {
-          console.log("Check email error:", error);
-          Alert.alert("Lỗi", "Không thể kiểm tra email");
+      ]);
+    } catch (apiError) {
+      console.log("API register failed, falling back to SQLite:", apiError);
+      // Fallback to SQLite
+      try {
+        const existing = await dbGetOne(
+          "SELECT * FROM accounts WHERE email = ?",
+          [email.trim().toLowerCase()]
+        );
+        
+        if (existing) {
+          return Alert.alert("Error", "Email đã được sử dụng");
         }
-      );
-    });
+
+        await dbExecute(
+          "INSERT INTO accounts (name, email, password, avatarUrl) VALUES (?, ?, ?, ?)",
+          [name.trim(), email.trim().toLowerCase(), password, ""]
+        );
+
+        Alert.alert("Thành công", "Đăng ký thành công (SQLite)", [
+          {
+            text: "OK",
+            onPress: () => navigation.navigate("Login"),
+          },
+        ]);
+      } catch (dbError) {
+        console.log("Register error:", dbError);
+        Alert.alert("Lỗi", "Không thể đăng ký: " + (dbError?.message || dbError));
+      }
+    }
   };
 
   return (
@@ -94,6 +109,15 @@ function RegisterScreen({ navigation }) {
         secureTextEntry
       />
 
+      <Text style={styles.label}>Description</Text>
+      <TextInput
+        style={styles.input}
+        placeholder="Tell us about yourself"
+        value={description}
+        onChangeText={setDescription}
+        multiline
+      />
+
       <TouchableOpacity style={styles.button} onPress={register}>
         <Text style={styles.buttonText}>Register</Text>
       </TouchableOpacity>
@@ -109,26 +133,27 @@ function LoginScreen({ navigation, setCurrentUser }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
-  const login = () => {
-    db.transaction((tx) => {
-      tx.executeSql(
+  const login = async () => {
+    if (!email.trim() || !password.trim()) {
+      return Alert.alert("Error", "Điền đầy đủ thông tin");
+    }
+
+    try {
+      const account = await dbGetOne(
         "SELECT * FROM accounts WHERE email = ? AND password = ?",
-        [email.trim().toLowerCase(), password],
-        (_, result) => {
-          if (result.rows.length > 0) {
-            const account = result.rows.item(0);
-            setCurrentUser(account);
-            navigation.replace("Profilescreen", { account });
-          } else {
-            Alert.alert("Error", "Email hoặc password sai");
-          }
-        },
-        (_, error) => {
-          console.log("Login error:", error);
-          Alert.alert("Lỗi", "Không thể đăng nhập");
-        }
+        [email.trim().toLowerCase(), password]
       );
-    });
+
+      if (account) {
+        setCurrentUser(account);
+        navigation.replace("Profilescreen", { account });
+      } else {
+        Alert.alert("Error", "Email hoặc password sai");
+      }
+    } catch (error) {
+      console.log("Login error:", error);
+      Alert.alert("Lỗi", "Không thể đăng nhập: " + (error?.message || error));
+    }
   };
 
   return (
@@ -178,66 +203,55 @@ function HomeScreen({ account }) {
     }
   }, [account]);
 
-  const loadUser = () => {
-    db.transaction((tx) => {
-      tx.executeSql(
+  const loadUser = async () => {
+    try {
+      const latestUser = await dbGetOne(
         "SELECT * FROM accounts WHERE email = ?",
-        [account.email],
-        (_, result) => {
-          if (result.rows.length > 0) {
-            const latestUser = result.rows.item(0);
-            setUser(latestUser);
-            setAvatarUrl(latestUser.avatarUrl || "");
-          }
-        },
-        (_, error) => {
-          console.log("loadUser error:", error);
-        }
+        [account.email]
       );
-    });
+
+      if (latestUser) {
+        setUser(latestUser);
+        setAvatarUrl(latestUser.avatarUrl || "");
+      }
+    } catch (error) {
+      console.log("loadUser error:", error);
+    }
   };
 
-  const loadPosts = () => {
-    db.transaction((tx) => {
-      tx.executeSql(
+  const loadPosts = async () => {
+    try {
+      const result = await dbQuery(
         "SELECT * FROM posts WHERE email = ? ORDER BY id DESC",
-        [account.email],
-        (_, result) => {
-          const tempPosts = [];
-          for (let i = 0; i < result.rows.length; i++) {
-            tempPosts.push(result.rows.item(i).content);
-          }
-          setPosts(tempPosts);
-        },
-        (_, error) => {
-          console.log("loadPosts error:", error);
-        }
+        [account.email]
       );
-    });
+
+      setPosts(result);
+    } catch (error) {
+      console.log("loadPosts error:", error);
+    }
   };
 
-  const saveAvatar = () => {
+  const saveAvatar = async () => {
     if (!avatarUrl.trim()) {
       return Alert.alert("Thông báo", "Nhập URL avatar");
     }
 
-    db.transaction((tx) => {
-      tx.executeSql(
+    try {
+      await dbExecute(
         "UPDATE accounts SET avatarUrl = ? WHERE email = ?",
-        [avatarUrl.trim(), account.email],
-        () => {
-          Alert.alert("Thành công", "Lưu avatar thành công");
-          loadUser();
-        },
-        (_, error) => {
-          console.log("saveAvatar error:", error);
-          Alert.alert("Lỗi", "Không thể lưu avatar");
-        }
+        [avatarUrl.trim(), account.email]
       );
-    });
+
+      Alert.alert("Thành công", "Lưu avatar thành công");
+      loadUser();
+    } catch (error) {
+      console.log("saveAvatar error:", error);
+      Alert.alert("Lỗi", "Không thể lưu avatar");
+    }
   };
 
-  const addPost = () => {
+  const addPost = async () => {
     if (!text.trim()) return;
     if (!user) return Alert.alert("Lỗi", "Không tìm thấy tài khoản");
 
@@ -245,25 +259,39 @@ function HomeScreen({ account }) {
       return Alert.alert("Hạn chế", "Mỗi tài khoản tối đa 5 bài");
     }
 
-    db.transaction((tx) => {
-      tx.executeSql(
+    try {
+      await dbExecute(
         "INSERT INTO posts (email, content) VALUES (?, ?)",
-        [account.email, text.trim()],
-        () => {
-          setText("");
-          loadPosts();
-        },
-        (_, error) => {
-          console.log("addPost error:", error);
-          Alert.alert("Lỗi", "Không thể thêm bài viết");
-        }
+        [account.email, text.trim()]
       );
-    });
+
+      setText("");
+      loadPosts();
+    } catch (error) {
+      console.log("addPost error:", error);
+      Alert.alert("Lỗi", "Không thể thêm bài viết");
+    }
+  };
+
+  const deletePost = async (postId) => {
+    try {
+      await dbExecute("DELETE FROM posts WHERE id = ?", [postId]);
+      loadPosts();
+    } catch (error) {
+      console.log("deletePost error:", error);
+      Alert.alert("Lỗi", "Không thể xóa bài viết");
+    }
   };
 
   const renderItem = ({ item }) => (
     <View style={styles.postItem}>
-      <Text>{item}</Text>
+      <Text style={{ flex: 1 }}>{item.content}</Text>
+      <TouchableOpacity
+        onPress={() => deletePost(item.id)}
+        style={styles.deleteButton}
+      >
+        <Ionicons name="trash" size={20} color="#ff4444" />
+      </TouchableOpacity>
     </View>
   );
 
@@ -289,6 +317,7 @@ function HomeScreen({ account }) {
       />
 
       <TouchableOpacity style={styles.button} onPress={saveAvatar}>
+        <Ionicons name="camera" size={20} color="#fff" style={{ marginRight: 8 }} />
         <Text style={styles.buttonText}>Save Avatar</Text>
       </TouchableOpacity>
 
@@ -300,13 +329,14 @@ function HomeScreen({ account }) {
       />
 
       <TouchableOpacity style={styles.button} onPress={addPost}>
+        <Ionicons name="add" size={20} color="#fff" style={{ marginRight: 8 }} />
         <Text style={styles.buttonText}>Add Post</Text>
       </TouchableOpacity>
 
       <FlatList
         data={posts}
         renderItem={renderItem}
-        keyExtractor={(item, index) => index.toString()}
+        keyExtractor={(item) => item.id.toString()}
         scrollEnabled={false}
         style={{ width: "100%" }}
         ListEmptyComponent={
@@ -327,6 +357,13 @@ function SettingScreen({ navigation, setCurrentUser }) {
 
   return (
     <View style={styles.container}>
+      <Ionicons
+        name="settings-outline"
+        size={64}
+        color="#4caf50"
+        style={{ marginBottom: 20 }}
+      />
+      <Text style={[styles.header, { marginBottom: 20 }]}>Settings</Text>
       <TouchableOpacity style={styles.button} onPress={logout}>
         <Text style={styles.buttonText}>Log Out</Text>
       </TouchableOpacity>
@@ -338,7 +375,22 @@ function Profilescreen({ route, navigation, setCurrentUser }) {
   const account = route?.params?.account;
 
   return (
-    <Tab.Navigator screenOptions={{ headerShown: false }}>
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
+        headerShown: false,
+        tabBarIcon: ({ focused, color, size }) => {
+          let iconName = route.name === "Home" ? "home" : "settings";
+          if (route.name === "Home") {
+            iconName = focused ? "home" : "home-outline";
+          } else if (route.name === "Setting") {
+            iconName = focused ? "settings" : "settings-outline";
+          }
+          return <Ionicons name={iconName} size={size} color={color} />;
+        },
+        tabBarActiveTintColor: "#4caf50",
+        tabBarInactiveTintColor: "#888",
+      })}
+    >
       <Tab.Screen name="Home">
         {(props) => <HomeScreen {...props} account={account} />}
       </Tab.Screen>
@@ -361,62 +413,35 @@ export default function App() {
   const [initialAccount, setInitialAccount] = useState(null);
 
   useEffect(() => {
-    createTables();
+    setupDatabase();
   }, []);
 
-  const createTables = () => {
-    db.transaction(
-      (tx) => {
-        tx.executeSql(`
-          CREATE TABLE IF NOT EXISTS accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            email TEXT UNIQUE,
-            password TEXT,
-            avatarUrl TEXT
-          );
-        `);
-
-        tx.executeSql(`
-          CREATE TABLE IF NOT EXISTS posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT,
-            content TEXT
-          );
-        `);
-      },
-      (error) => {
-        console.log("createTables error:", error);
-        setLoading(false);
-      },
-      () => {
-        checkLogin();
-      }
-    );
+  const setupDatabase = async () => {
+    try {
+      await initDB();
+      await checkLogin();
+    } catch (error) {
+      console.log("Database setup error:", error);
+      setLoading(false);
+    }
   };
 
-  const checkLogin = () => {
-    db.transaction((tx) => {
-      tx.executeSql(
-        "SELECT * FROM accounts LIMIT 1",
-        [],
-        (_, result) => {
-          if (result.rows.length > 0) {
-            const account = result.rows.item(0);
-            setInitialRoute("Profilescreen");
-            setInitialAccount(account);
-          } else {
-            setInitialRoute("Login");
-          }
-          setLoading(false);
-        },
-        (_, error) => {
-          console.log("checkLogin error:", error);
-          setInitialRoute("Login");
-          setLoading(false);
-        }
-      );
-    });
+  const checkLogin = async () => {
+    try {
+      const account = await dbGetOne("SELECT * FROM accounts LIMIT 1", []);
+
+      if (account) {
+        setInitialRoute("Profilescreen");
+        setInitialAccount(account);
+      } else {
+        setInitialRoute("Login");
+      }
+    } catch (error) {
+      console.log("checkLogin error:", error);
+      setInitialRoute("Login");
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (loading) {
@@ -503,6 +528,13 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     marginBottom: 15,
+    flexDirection: "row",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
   buttonText: {
     color: "#fff",
@@ -527,5 +559,11 @@ const styles = StyleSheet.create({
     width: "100%",
     borderWidth: 1,
     borderColor: "#ddd",
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  deleteButton: {
+    marginLeft: 10,
+    padding: 5,
   },
 });

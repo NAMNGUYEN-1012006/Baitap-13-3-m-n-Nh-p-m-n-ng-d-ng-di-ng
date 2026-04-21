@@ -13,7 +13,7 @@ function HomeScreen({ navigation, route }){
   const [text, setText] = useState('');
   const [posts, setPosts] = useState(account?.posts || []);
 
-  const addPost = () => {
+  const addPost = async () => {
     if (!text.trim()) return;
     if (posts.length >= 5) return Alert.alert('Hạn chế', 'Mỗi tk được tối đa 5 bài');
 
